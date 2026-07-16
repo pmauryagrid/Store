@@ -7,6 +7,7 @@ import com.spring.store.entity.Session;
 import com.spring.store.repository.PersonRepository;
 import com.spring.store.repository.SessionRepository;
 import lombok.AllArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -18,7 +19,8 @@ import java.util.UUID;
 
 @Service
 @AllArgsConstructor
-@Transactional
+@Transactional(noRollbackFor = ResponseStatusException.class)
+@Slf4j
 public class AuthServiceImpl implements AuthService {
 
     private final PersonRepository personRepository;
@@ -32,8 +34,7 @@ public class AuthServiceImpl implements AuthService {
 
         boolean userExists = personRepository.existsByEmail(email);
         if (userExists) {
-            throw new ResponseStatusException(
-                    HttpStatus.CONFLICT, "User already exists");
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "User already exists");
         }
         Person person = Person.builder()
                 .email(email)
@@ -74,25 +75,34 @@ public class AuthServiceImpl implements AuthService {
 
     private Person verifyCredentials(String email, String password) {
         Person person = personRepository.findByEmail(email)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED));
+                .orElseThrow(() -> {
+                    log.warn("Authentication failed: User with email {} not found", email);
+                    return new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+                });
 
         LocalDateTime now = LocalDateTime.now();
 
         if (person.isLocked()) {
             if (person.getLastFailedAttempt() != null &&
                     person.getLastFailedAttempt().isBefore(now.minusMinutes(60))) {
+                log.info("User lock expired for {}. Unlocking account.", email);
                 person.setLocked(false);
                 person.setFailedAttempt(0);
             } else {
+                log.warn("Authentication blocked: Account is locked for user {}", email);
                 throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
             }
         }
 
         if (!passwordEncoder.matches(password, person.getPassword())) {
-            person.setLastFailedAttempt(now);
-            person.setFailedAttempt(person.getFailedAttempt() + 1);
+            int newFailedCount = person.getFailedAttempt() + 1;
+            log.warn("Authentication failed: Password mismatch for user {}. Failed attempts: {}", email, newFailedCount);
 
-            if (person.getFailedAttempt() >= 5) {
+            person.setLastFailedAttempt(now);
+            person.setFailedAttempt(newFailedCount);
+
+            if (newFailedCount >= 5) {
+                log.warn("User {} has exceeded max attempts. Locking account.", email);
                 person.setLocked(true);
             }
 

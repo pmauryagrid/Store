@@ -15,6 +15,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -72,7 +73,12 @@ public class AuthControllerTests {
         mockMvc.perform(post("/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isConflict());
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.error").value("Conflict"))
+                .andExpect(jsonPath("$.message").value("User already exists"))
+                .andExpect(jsonPath("$.path").value("/auth/register"))
+                .andExpect(jsonPath("$.timestamp").exists());
     }
 
     @Test
@@ -129,5 +135,30 @@ public class AuthControllerTests {
         Person updated = personRepository.findByEmail(TEST_EMAIL).orElse(null);
         assertNotNull(updated);
         assertTrue(passwordEncoder.matches(NEW_PASSWORD, updated.getPassword()));
+    }
+
+    @Test
+    public void loginUser_whenPasswordFailsFiveTimes_shouldLockAccount() throws Exception {
+        Person person = Person.builder()
+                .email(TEST_EMAIL)
+                .password(passwordEncoder.encode(TEST_PASSWORD))
+                .failedAttempt(0)
+                .locked(false)
+                .build();
+        personRepository.save(person);
+
+        UserRegisterAndLoginRequest wrongRequest = new UserRegisterAndLoginRequest(TEST_EMAIL, "wrongpassword");
+
+        for (int i = 0; i < 5; i++) {
+            mockMvc.perform(post("/auth/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(wrongRequest)))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        Person updated = personRepository.findByEmail(TEST_EMAIL).orElse(null);
+        assertNotNull(updated);
+        assertTrue(updated.isLocked());
+        assertEquals(5, updated.getFailedAttempt());
     }
 }
